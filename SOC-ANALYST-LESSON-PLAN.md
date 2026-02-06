@@ -5,10 +5,10 @@
 
 ## Overview
 
-**Duration:** 8 weeks (40-50 hours total)
+**Duration:** 12 weeks (70-80 hours total)
 **Level:** Beginner to Intermediate
 **Prerequisites:** Basic understanding of Windows, networking concepts
-**Tools:** ELK Stack, Winlogbeat, Sysmon, Atomic Red Team, AI SOC Agent
+**Tools:** ELK Stack, Winlogbeat, Sysmon, Atomic Red Team, AI SOC Agent, Azure CLI (az), Azure Monitor, Azure Activity Logs, NSG Flow Logs, Azure Entra ID
 
 **Learning Objectives:**
 By the end of this course, you will be able to:
@@ -19,6 +19,12 @@ By the end of this course, you will be able to:
 - Leverage AI to accelerate incident analysis
 - Write detection rules and queries
 - Generate professional incident reports
+- Monitor and analyze Azure cloud infrastructure activity
+- Detect cloud-specific misconfigurations and attack techniques
+- Apply the MITRE ATT&CK Cloud Matrix to Azure environments
+- Conduct cloud incident response and forensics
+- Build cloud security monitoring dashboards integrating Azure data with ELK
+- Produce a portfolio-ready cloud security assessment
 
 ---
 
@@ -1373,6 +1379,927 @@ Prepare 15-minute presentation including:
 
 ---
 
+## Week 9: Azure Security Fundamentals
+
+### Lesson 9.1: Azure Activity Logs and Azure Monitor (3 hours)
+
+**Objectives:**
+- Understand Azure Activity Log categories and their security relevance
+- Query Activity Logs using Azure CLI
+- Export Activity Logs for centralized analysis
+- Detect who performed what action on which resource and when
+
+**Theory:**
+
+Azure Activity Logs record control-plane operations against your subscription. They answer the critical question: **who did what, when, and to which resource?**
+
+**Control Plane vs. Data Plane:**
+- **Control plane**: Creating/modifying/deleting Azure resources (Activity Logs capture this)
+- **Data plane**: Using the resources themselves (e.g., RDP into a VM, querying Elasticsearch)
+
+**Activity Log Categories:**
+
+| Category | What It Captures | SOC Relevance |
+|----------|-----------------|---------------|
+| Administrative | Resource create/update/delete | Detect unauthorized changes |
+| Security | Defender alerts and notifications | Threat notifications |
+| Alert | Azure Monitor alert triggers | Operational awareness |
+| Policy | Azure Policy evaluation results | Compliance drift |
+| Recommendation | Azure Advisor recommendations | Security posture |
+
+**Key Activity Log Fields:**
+- `caller` - Who performed the action (email or service principal)
+- `operationName` - What was done (e.g., `Microsoft.Network/networkSecurityGroups/securityRules/write`)
+- `resourceId` - Which resource was affected
+- `status` - Did it succeed or fail?
+- `eventTimestamp` - When it happened
+
+**Retention:** 90 days free in Azure, export to Storage Account for longer retention.
+
+**Certification Mapping:** AZ-500 (Manage security operations), SC-200 (Mitigate threats using Microsoft services)
+
+**Hands-On:**
+
+1. **List all Activity Log entries for your resource group (last 7 days):**
+   ```powershell
+   az monitor activity-log list --resource-group ELK-Security-Lab --start-time ((Get-Date).AddDays(-7).ToUniversalTime().ToString("yyyy-MM-ddTHH:mm:ssZ")) --output table
+   ```
+
+2. **Filter for write operations (resource modifications):**
+   ```powershell
+   az monitor activity-log list --resource-group ELK-Security-Lab --select caller operationName status eventTimestamp --output table
+   ```
+
+3. **Export Activity Logs to JSON for analysis:**
+   ```powershell
+   az monitor activity-log list --resource-group ELK-Security-Lab --start-time ((Get-Date).AddDays(-7).ToUniversalTime().ToString("yyyy-MM-ddTHH:mm:ssZ")) --output json > azure-activity-logs.json
+   ```
+
+4. **Generate a test event by modifying an NSG rule:**
+   ```powershell
+   # Create a temporary test rule (generates an Activity Log event)
+   az network nsg rule create --resource-group ELK-Security-Lab --nsg-name ELK-NSG --name Test-Rule-DELETE-ME --priority 4000 --source-address-prefixes "1.2.3.4/32" --destination-port-ranges 12345 --access Deny --protocol Tcp --output none
+
+   # Delete the test rule
+   az network nsg rule delete --resource-group ELK-Security-Lab --nsg-name ELK-NSG --name Test-Rule-DELETE-ME --output none
+   ```
+
+5. **Find those events in Activity Logs:**
+   ```powershell
+   az monitor activity-log list --resource-group ELK-Security-Lab --start-time ((Get-Date).AddMinutes(-30).ToUniversalTime().ToString("yyyy-MM-ddTHH:mm:ssZ")) --select caller operationName resourceId status eventTimestamp --output table
+   ```
+
+6. **Search for specific high-risk operations:**
+   ```powershell
+   # Find all NSG rule changes
+   az monitor activity-log list --resource-group ELK-Security-Lab --output json | python -c "
+   import json, sys
+   logs = json.load(sys.stdin)
+   for log in logs:
+       op = log.get('operationName', {}).get('localizedValue', '')
+       if 'SecurityRule' in op or 'networkSecurityGroup' in op.lower():
+           print(f'{log.get(\"eventTimestamp\")} | {log.get(\"caller\")} | {op} | {log.get(\"status\", {}).get(\"localizedValue\", \"\")}')"
+   ```
+
+7. **Use the SOC Agent to analyze exported logs:**
+   ```python
+   python soc_agent.py
+
+   # Prompt:
+   "Parse the file azure-activity-logs.json and identify any suspicious administrative actions such as NSG rule changes, VM deletions, or new deployments by unusual callers"
+   ```
+
+**Success Criteria:**
+- [ ] Can query Azure Activity Logs via CLI
+- [ ] Can filter logs by operation type, caller, and time range
+- [ ] Can export Activity Logs to JSON
+- [ ] Understand Activity Log categories and their security relevance
+- [ ] Can detect resource modifications (NSG changes, VM operations)
+
+**Assignment:**
+Export 7 days of Activity Logs. Write a summary of all administrative operations, identify the top callers (users/service principals), and flag any operations that could represent a security risk. Save this as a markdown document in your Proof folder.
+
+---
+
+### Lesson 9.2: NSG Flow Logs and Network Security Analysis (3 hours)
+
+**Objectives:**
+- Understand NSG Flow Log format and fields
+- Enable NSG Flow Logs on the lab environment
+- Analyze network traffic patterns to identify anomalies
+- Correlate Azure network data with endpoint data in Kibana
+
+**Theory:**
+
+NSG Flow Logs capture information about IP traffic flowing through your NSG. They show every connection attempt -- allowed or denied.
+
+**Flow Log Tuple Format (Version 2):**
+```
+1.2.3.4,10.0.1.4,54321,3389,T,I,A,5,300,5,300
+```
+
+| Field | Example | Meaning |
+|-------|---------|---------|
+| Source IP | 1.2.3.4 | Where traffic came from |
+| Dest IP | 10.0.1.4 | Where traffic is going |
+| Source Port | 54321 | Ephemeral port |
+| Dest Port | 3389 | RDP port |
+| Protocol | T | T=TCP, U=UDP |
+| Direction | I | I=Inbound, O=Outbound |
+| Action | A | A=Allowed, D=Denied |
+| Packets Src | 5 | Packets from source |
+| Bytes Src | 300 | Bytes from source |
+| Packets Dst | 5 | Packets from destination |
+| Bytes Dst | 300 | Bytes from destination |
+
+**Cost:** Storage Account cost only (~$2-5/month for lab traffic volumes).
+
+**Certification Mapping:** AZ-500 (Configure network security)
+
+**Hands-On:**
+
+1. **Create a Storage Account for flow logs:**
+   ```powershell
+   $storageName = "elksoclogs$(Get-Random -Minimum 10000 -Maximum 99999)"
+   az storage account create --name $storageName --resource-group ELK-Security-Lab --location eastus --sku Standard_LRS --output none
+   echo "Storage account: $storageName"
+   ```
+
+2. **Get the NSG resource ID:**
+   ```powershell
+   az network nsg show --resource-group ELK-Security-Lab --name ELK-NSG --query id --output tsv
+   ```
+
+3. **Enable NSG Flow Logs:**
+   ```powershell
+   az network watcher flow-log create --name "ELK-NSG-FlowLog" --resource-group ELK-Security-Lab --nsg ELK-NSG --storage-account $storageName --enabled true --format JSON --log-version 2 --retention 7
+   ```
+
+4. **Generate traffic** by browsing to Kibana, RDP-ing to the Windows VM, and running outbound tests from the Windows VM.
+
+5. **Wait 10-15 minutes, then download flow logs:**
+   ```powershell
+   # List blob containers
+   az storage container list --account-name $storageName --output table
+
+   # Download flow log blobs
+   mkdir flow-logs
+   az storage blob download-batch --destination ./flow-logs --source insights-logs-networksecuritygroupflowevent --account-name $storageName
+   ```
+
+6. **Parse flow logs with the Python script:**
+   ```powershell
+   python parse_flow_logs.py flow-logs/
+   ```
+
+   The `parse_flow_logs.py` script (included in this repo) will show:
+   - Total allowed/denied flows
+   - Top source IPs
+   - Top destination ports
+   - Denied connection attempts (potential scanning)
+   - Outbound connections to external IPs
+
+7. **List current NSG rules and audit them:**
+   ```powershell
+   az network nsg rule list --resource-group ELK-Security-Lab --nsg-name ELK-NSG --output table
+   ```
+
+8. **Correlate with endpoint data:**
+   In Kibana, search for the same source IPs that appear in your flow logs:
+   ```
+   source.ip:<suspicious-ip-from-flow-logs>
+   ```
+
+**Success Criteria:**
+- [ ] Can enable NSG Flow Logs on an existing NSG
+- [ ] Can download and parse flow log JSON
+- [ ] Can identify denied vs. allowed traffic
+- [ ] Can spot unusual outbound connections
+- [ ] Understand the security implications of NSG rule configurations
+
+**Assignment:**
+Enable flow logs, collect 1 hour of data, and produce a "Network Security Posture Report" that includes: (1) total allowed/denied flows, (2) top source IPs, (3) top destination ports, (4) any suspicious outbound connections, (5) NSG rule audit with recommendations.
+
+---
+
+## Week 10: Cloud Identity and Access Security
+
+### Lesson 10.1: Azure Entra ID and RBAC Security (3 hours)
+
+**Objectives:**
+- Understand Azure Entra ID (formerly Azure AD) and its role in cloud security
+- Audit role-based access control (RBAC) assignments in the subscription
+- Detect over-privileged accounts and service principals
+- Correlate RBAC changes with Activity Log events
+
+**Theory:**
+
+**Azure Entra ID vs. Traditional Active Directory:**
+- Traditional AD: On-premises, manages Windows domain resources
+- Entra ID: Cloud-based identity service, manages Azure and Microsoft 365 access
+- In your SOC lab, Entra ID controls who can modify your Azure infrastructure
+
+**Azure RBAC Model:**
+```
+Scope (where?) + Role (what?) + Principal (who?) = Assignment
+```
+
+Scopes are hierarchical:
+```
+Management Group
+  └── Subscription
+       └── Resource Group (ELK-Security-Lab)
+            └── Resource (Elasticsearch-VM)
+```
+
+**Critical Roles to Monitor:**
+
+| Role | Risk Level | Why |
+|------|-----------|-----|
+| Owner | CRITICAL | Full access + can assign roles to others |
+| User Access Administrator | CRITICAL | Can grant others access |
+| Contributor | HIGH | Can create/modify/delete all resources |
+| Network Contributor | MEDIUM | Can modify NSG rules, open ports |
+| Reader | LOW | Read-only, minimal risk |
+
+**Certification Mapping:** AZ-500 (Manage identity and access), SC-200
+
+**Hands-On:**
+
+1. **List all role assignments in the subscription:**
+   ```powershell
+   az role assignment list --all --output table
+   ```
+
+2. **Find all Owner-level assignments (highest privilege):**
+   ```powershell
+   az role assignment list --all --role "Owner" --output table
+   ```
+
+3. **Find Contributor assignments at the resource group level:**
+   ```powershell
+   az role assignment list --resource-group ELK-Security-Lab --output table
+   ```
+
+4. **List all service principals (app registrations):**
+   ```powershell
+   az ad sp list --all --query "[].{Name:displayName, AppId:appId, Type:servicePrincipalType}" --output table
+   ```
+
+5. **Check for users with multiple high-privilege roles:**
+   ```powershell
+   az role assignment list --all --query "[?roleDefinitionName=='Owner' || roleDefinitionName=='Contributor' || roleDefinitionName=='User Access Administrator'].{Principal:principalName, Role:roleDefinitionName, Scope:scope}" --output table
+   ```
+
+6. **Create a test RBAC assignment and then remove it (generates Activity Log entries):**
+   ```powershell
+   # Get your own user object ID
+   $myObjectId = az ad signed-in-user show --query id --output tsv
+
+   # Assign Reader role at resource group level
+   az role assignment create --assignee $myObjectId --role "Reader" --resource-group ELK-Security-Lab --output none
+
+   # Then remove it
+   az role assignment delete --assignee $myObjectId --role "Reader" --resource-group ELK-Security-Lab
+   ```
+
+7. **Check Activity Logs for the role assignment changes:**
+   ```powershell
+   az monitor activity-log list --resource-group ELK-Security-Lab --start-time ((Get-Date).AddMinutes(-30).ToUniversalTime().ToString("yyyy-MM-ddTHH:mm:ssZ")) --output table
+   ```
+
+8. **Export full RBAC data for audit report:**
+   ```powershell
+   az role assignment list --all --include-inherited --output json > rbac-audit.json
+   ```
+
+**Success Criteria:**
+- [ ] Can enumerate all RBAC assignments across the subscription
+- [ ] Can identify over-privileged accounts (Owner, User Access Administrator)
+- [ ] Can detect service principals and understand their permissions
+- [ ] Can correlate RBAC changes with Activity Log events
+- [ ] Understand the principle of least privilege in Azure
+
+**Assignment:**
+Perform a complete RBAC audit. Document: (1) all role assignments, (2) any over-privileged accounts, (3) service principals and their roles, (4) recommendations for reducing privilege. Format as a professional security assessment document.
+
+---
+
+### Lesson 10.2: Cloud Misconfiguration Hunting (3 hours)
+
+**Objectives:**
+- Identify common Azure misconfigurations that lead to breaches
+- Check for exposed storage accounts, open NSG rules, and unencrypted resources
+- Build a cloud security posture checklist
+- Automate misconfiguration detection with the `azure_security_scanner.py` script
+
+**Theory:**
+
+**Top Cloud Misconfigurations (CIS Azure Benchmark):**
+
+| Misconfiguration | Risk | Real-World Impact |
+|-----------------|------|-------------------|
+| Public blob access on storage accounts | HIGH | Capital One breach (170M records) |
+| NSG rules allowing 0.0.0.0/0 on sensitive ports | CRITICAL | Direct attack surface for RDP/SSH brute force |
+| Unencrypted VM disks | MEDIUM | Data exposure if disk is accessed |
+| Missing diagnostic logging | MEDIUM | Cannot detect or investigate attacks |
+| Storage account without HTTPS enforcement | MEDIUM | Data interception in transit |
+| Overly permissive RBAC | HIGH | Insider threat / compromised account blast radius |
+
+**Certification Mapping:** AZ-500 (Manage security posture), SC-200, CySA+
+
+**Hands-On:**
+
+1. **Check for NSG rules allowing traffic from any source (0.0.0.0/0):**
+   ```powershell
+   az network nsg rule list --resource-group ELK-Security-Lab --nsg-name ELK-NSG --query "[?sourceAddressPrefix=='*' || sourceAddressPrefix=='0.0.0.0/0' || sourceAddressPrefix=='Internet'].{Name:name, Port:destinationPortRange, Source:sourceAddressPrefix, Access:access, Priority:priority}" --output table
+   ```
+
+2. **Check if storage accounts have public blob access:**
+   ```powershell
+   az storage account list --resource-group ELK-Security-Lab --query "[].{Name:name, PublicAccess:allowBlobPublicAccess, HttpsOnly:enableHttpsTrafficOnly, MinTLS:minimumTlsVersion}" --output table
+   ```
+
+3. **Check if VM disks are encrypted:**
+   ```powershell
+   az vm encryption show --resource-group ELK-Security-Lab --name Elasticsearch-VM 2>$null
+   az vm encryption show --resource-group ELK-Security-Lab --name WinTarget-VM 2>$null
+   ```
+
+4. **Check for VMs with public IPs (attack surface):**
+   ```powershell
+   az vm list-ip-addresses --resource-group ELK-Security-Lab --output table
+   ```
+
+5. **Check for diagnostic settings (is logging enabled?):**
+   ```powershell
+   $subId = az account show --query id --output tsv
+   az monitor diagnostic-settings list --resource "/subscriptions/$subId" --output table
+   ```
+
+6. **Check for open management ports (SSH/RDP to internet):**
+   ```powershell
+   az network nsg rule list --resource-group ELK-Security-Lab --nsg-name ELK-NSG --query "[?(destinationPortRange=='22' || destinationPortRange=='3389') && (sourceAddressPrefix=='*' || sourceAddressPrefix=='Internet')].{Name:name, Port:destinationPortRange, Source:sourceAddressPrefix}" --output table
+   ```
+
+7. **Run the automated misconfiguration scanner:**
+   ```powershell
+   python azure_security_scanner.py
+   ```
+
+   The `azure_security_scanner.py` script (included in this repo) automates all of the above checks and produces a formatted security posture report with severity ratings and recommendations.
+
+8. **Use the SOC Agent to analyze findings:**
+   ```python
+   python soc_agent.py
+
+   # Prompt:
+   "Parse the file azure-security-scan-results.json and prioritize the misconfigurations by risk level. For each finding, explain the potential attack scenario and remediation steps."
+   ```
+
+**Success Criteria:**
+- [ ] Can identify open NSG rules allowing unrestricted traffic
+- [ ] Can check for unencrypted VM disks
+- [ ] Can find VMs with public IP addresses
+- [ ] Can verify storage account security settings
+- [ ] Can produce an automated security posture report
+
+**Assignment:**
+Run the full misconfiguration scanner against your lab environment. Create a "Cloud Security Posture Report" with: executive summary, findings table (severity, description, recommendation), and remediation priority list. Save the scanner script and report to your GitHub repo as a portfolio piece.
+
+---
+
+## Week 11: Cloud Attack Simulation and Defense
+
+### Lesson 11.1: Cloud MITRE ATT&CK Matrix (3 hours)
+
+**Objectives:**
+- Understand the MITRE ATT&CK Cloud Matrix (Azure-specific techniques)
+- Map cloud-specific attacks to Azure services
+- Simulate cloud attack techniques using Azure CLI
+- Detect simulated cloud attacks using Activity Logs
+
+**Theory:**
+
+The MITRE ATT&CK Cloud Matrix covers techniques specific to cloud environments. These are different from endpoint techniques because attackers target the cloud control plane -- APIs, identity, and infrastructure management.
+
+**The Cloud Kill Chain:**
+```
+Initial Access (stolen credentials)
+    ↓
+Discovery (enumerate resources, roles, networking)
+    ↓
+Privilege Escalation (assign Owner/Contributor roles)
+    ↓
+Persistence (create new cloud accounts, deploy backdoor VMs)
+    ↓
+Defense Evasion (disable logging, modify NSG rules)
+    ↓
+Collection (access storage accounts, databases)
+    ↓
+Exfiltration (copy data to attacker-controlled storage)
+```
+
+**Key Cloud ATT&CK Techniques for Azure:**
+
+| Technique ID | Name | Azure Context | Detection |
+|-------------|------|---------------|-----------|
+| T1078.004 | Cloud Accounts | Compromised Azure credentials | Sign-in logs, unusual locations |
+| T1580 | Cloud Infrastructure Discovery | `az vm list`, `az resource list` | Activity Log: read operations spike |
+| T1562.008 | Disable Cloud Logs | Deleting diagnostic settings | Activity Log: delete operations |
+| T1098.003 | Additional Cloud Roles | Adding Owner/Contributor | Activity Log: role assignment write |
+| T1136.003 | Cloud Account | Creating new Entra ID users | Audit Log: user creation |
+| T1578.002 | Create Cloud Instance | Deploying rogue VMs | Activity Log: VM creation |
+| T1535 | Unused/Unsupported Cloud Regions | Deploy resources in odd regions | Activity Log: unusual location field |
+| T1496 | Resource Hijacking | Cryptomining VMs | Unusual VM sizes, cost alerts |
+
+**Certification Mapping:** SC-200, AZ-500
+
+**Hands-On:**
+
+1. **Simulate T1580 - Cloud Infrastructure Discovery:**
+   ```powershell
+   # Attacker enumerates all resources
+   az resource list --resource-group ELK-Security-Lab --output table
+   az vm list --resource-group ELK-Security-Lab --show-details --output table
+   az network nsg list --resource-group ELK-Security-Lab --output table
+   az network public-ip list --resource-group ELK-Security-Lab --output table
+   az storage account list --resource-group ELK-Security-Lab --output table
+   ```
+
+2. **Detect discovery in Activity Logs:**
+   ```powershell
+   az monitor activity-log list --resource-group ELK-Security-Lab --start-time ((Get-Date).AddMinutes(-15).ToUniversalTime().ToString("yyyy-MM-ddTHH:mm:ssZ")) --query "[?contains(operationName.localizedValue, 'List') || contains(operationName.localizedValue, 'Read')].{Time:eventTimestamp, Caller:caller, Operation:operationName.localizedValue}" --output table
+   ```
+
+3. **Simulate T1098.003 - Additional Cloud Roles (Privilege Escalation):**
+   ```powershell
+   $myObjectId = az ad signed-in-user show --query id --output tsv
+
+   # Assign Contributor (elevated role)
+   az role assignment create --assignee $myObjectId --role "Contributor" --resource-group ELK-Security-Lab --output none
+
+   # Immediately remove it
+   az role assignment delete --assignee $myObjectId --role "Contributor" --resource-group ELK-Security-Lab
+   ```
+
+4. **Detect role changes in Activity Logs:**
+   ```powershell
+   az monitor activity-log list --resource-group ELK-Security-Lab --start-time ((Get-Date).AddMinutes(-15).ToUniversalTime().ToString("yyyy-MM-ddTHH:mm:ssZ")) --query "[?contains(operationName.localizedValue, 'role')].{Time:eventTimestamp, Caller:caller, Operation:operationName.localizedValue, Status:status.localizedValue}" --output table
+   ```
+
+5. **Simulate T1578.002 - Create Cloud Instance (Rogue VM):**
+   ```powershell
+   # Create a tiny VM in a DIFFERENT region (this is suspicious!)
+   az vm create --resource-group ELK-Security-Lab --name RogueVM-DELETE --location westus2 --image Ubuntu2204 --size Standard_B1s --admin-username testadmin --generate-ssh-keys --no-wait --output none
+
+   # Wait briefly, then delete to avoid cost
+   Start-Sleep -Seconds 30
+   az vm delete --resource-group ELK-Security-Lab --name RogueVM-DELETE --yes --no-wait
+   az network nic delete --resource-group ELK-Security-Lab --name RogueVM-DELETEVMNic --no-wait 2>$null
+   az network public-ip delete --resource-group ELK-Security-Lab --name RogueVM-DELETEPublicIP --no-wait 2>$null
+   ```
+
+6. **Detect the rogue VM in Activity Logs:**
+   ```powershell
+   az monitor activity-log list --resource-group ELK-Security-Lab --start-time ((Get-Date).AddMinutes(-30).ToUniversalTime().ToString("yyyy-MM-ddTHH:mm:ssZ")) --query "[?contains(operationName.localizedValue, 'Virtual Machine')].{Time:eventTimestamp, Caller:caller, Operation:operationName.localizedValue, Status:status.localizedValue}" --output table
+   ```
+
+7. **Cross-layer correlation (cloud + endpoint):**
+   After detecting a cloud-level compromise, check if the attacker also accessed the Windows VM:
+   ```
+   # In Kibana, search for new RDP sessions from unusual IPs
+   event.code:4624 AND winlog.event_data.LogonType:10
+   ```
+
+8. **Build cloud detection rules:**
+
+   | Rule | Query Pattern | Severity |
+   |------|--------------|----------|
+   | Rogue VM Creation | Activity Log: `virtualMachines/write` in unusual region | HIGH |
+   | Role Escalation | Activity Log: `roleAssignments/write` with Owner/Contributor | CRITICAL |
+   | Mass Discovery | Activity Log: >20 read/list operations in 5 minutes | MEDIUM |
+   | Log Deletion | Activity Log: `diagnosticSettings/delete` | CRITICAL |
+
+**Success Criteria:**
+- [ ] Can explain at least 6 cloud-specific MITRE ATT&CK techniques
+- [ ] Can simulate cloud attacks using Azure CLI
+- [ ] Can detect simulated attacks in Azure Activity Logs
+- [ ] Can correlate cloud-level and endpoint-level evidence
+- [ ] Understand the cloud kill chain concept
+
+**Assignment:**
+Choose 3 cloud ATT&CK techniques, simulate each one, detect the evidence in Activity Logs, and write a detection rule for each (query + threshold + severity + response). Document as a "Cloud Threat Detection Playbook."
+
+---
+
+### Lesson 11.2: Azure Incident Response and Cloud Forensics (4 hours)
+
+**Objectives:**
+- Apply incident response methodology to cloud-specific incidents
+- Collect and preserve cloud forensic evidence
+- Perform containment actions in Azure
+- Create a cloud incident response playbook
+
+**Theory:**
+
+**How Cloud IR Differs from Traditional IR:**
+- No physical access to hardware -- everything is API-based
+- Evidence is collected via Azure CLI and APIs, not disk imaging
+- Shared responsibility model: Microsoft secures the cloud, you secure what's IN the cloud
+- Resources are ephemeral -- an attacker can delete VMs to cover tracks
+
+**Cloud Evidence Sources:**
+
+| Source | What It Contains | How to Collect |
+|--------|-----------------|----------------|
+| Activity Logs | Control plane operations | `az monitor activity-log list` |
+| NSG Flow Logs | Network traffic metadata | Storage Account download |
+| Entra ID Sign-In Logs | Authentication events | `az rest` / Graph API |
+| VM Disk Snapshots | Full disk contents | `az snapshot create` |
+| RBAC State | Who has what access | `az role assignment list` |
+| NSG Rules | Network policy state | `az network nsg rule list` |
+
+**Containment Actions in Azure:**
+
+| Action | Command | When to Use |
+|--------|---------|------------|
+| Lock down NSG | Add Deny-All rule at priority 100 | Active attack, stop all traffic |
+| Deallocate VM | `az vm deallocate` | Compromised VM, preserve disk |
+| Revoke RBAC | `az role assignment delete` | Compromised credentials |
+| Rotate keys | Regenerate storage keys | Exposed storage credentials |
+| Snapshot disk | `az snapshot create` | Preserve forensic evidence |
+
+**Certification Mapping:** AZ-500, SC-200, GCIH
+
+**Hands-On Scenario: "Unauthorized VM Deployment and Data Access"**
+
+*You receive an alert that a new VM was created in your resource group by an unknown caller. Investigate, contain, and remediate.*
+
+1. **Detection -- Discover the unauthorized activity:**
+   ```powershell
+   az monitor activity-log list --resource-group ELK-Security-Lab --start-time ((Get-Date).AddHours(-24).ToUniversalTime().ToString("yyyy-MM-ddTHH:mm:ssZ")) --query "[?contains(operationName.localizedValue, 'Create') && contains(operationName.localizedValue, 'Virtual Machine')].{Time:eventTimestamp, Caller:caller, Operation:operationName.localizedValue, Status:status.localizedValue, Resource:resourceId}" --output table
+   ```
+
+2. **Scoping -- Determine what else the caller did:**
+   ```powershell
+   # Replace SUSPICIOUS-CALLER with the actual caller from step 1
+   az monitor activity-log list --resource-group ELK-Security-Lab --start-time ((Get-Date).AddHours(-24).ToUniversalTime().ToString("yyyy-MM-ddTHH:mm:ssZ")) --query "[?caller=='SUSPICIOUS-CALLER'].{Time:eventTimestamp, Operation:operationName.localizedValue, Status:status.localizedValue, Resource:resourceId}" --output table
+   ```
+
+3. **Evidence Preservation -- Snapshot a VM disk:**
+   ```powershell
+   # Create a forensic snapshot of a potentially compromised VM disk
+   $diskName = az vm show --resource-group ELK-Security-Lab --name WinTarget-VM --query "storageProfile.osDisk.name" --output tsv
+   az snapshot create --resource-group ELK-Security-Lab --name "forensic-snapshot-$(Get-Date -Format 'yyyyMMdd')" --source $diskName --output none
+   ```
+
+4. **Containment -- Lock down access:**
+   ```powershell
+   # Block all external access via NSG emergency rule
+   az network nsg rule create --resource-group ELK-Security-Lab --nsg-name ELK-NSG --name Emergency-Block-All --priority 100 --source-address-prefixes "*" --destination-port-ranges "*" --access Deny --protocol "*" --description "Emergency lockdown - incident response" --output none
+
+   # IMPORTANT: Re-allow your own IP after containment
+   # az network nsg rule delete --resource-group ELK-Security-Lab --nsg-name ELK-NSG --name Emergency-Block-All
+   ```
+
+5. **Revoke compromised credentials:**
+   ```powershell
+   # List role assignments for the suspicious caller
+   az role assignment list --assignee SUSPICIOUS-CALLER --output table
+
+   # Remove their access
+   az role assignment delete --assignee SUSPICIOUS-CALLER --role "Contributor" --resource-group ELK-Security-Lab
+   ```
+
+6. **Export all evidence for the incident:**
+   ```powershell
+   mkdir incident-evidence
+
+   # Activity Logs
+   az monitor activity-log list --resource-group ELK-Security-Lab --start-time ((Get-Date).AddDays(-7).ToUniversalTime().ToString("yyyy-MM-ddTHH:mm:ssZ")) --output json > incident-evidence/activity-logs.json
+
+   # RBAC state
+   az role assignment list --all --resource-group ELK-Security-Lab --output json > incident-evidence/rbac.json
+
+   # NSG rules
+   az network nsg rule list --resource-group ELK-Security-Lab --nsg-name ELK-NSG --output json > incident-evidence/nsg-rules.json
+   ```
+
+7. **Use SOC Agent to generate the cloud incident report:**
+   ```python
+   python soc_agent.py
+
+   # Prompt:
+   "I have evidence of an unauthorized VM deployment in our Azure environment. Parse the file incident-evidence/activity-logs.json and create a cloud incident report. Include timeline, MITRE ATT&CK technique mapping, containment actions taken, and recommendations to prevent recurrence."
+   ```
+
+8. **Write the Cloud IR Playbook** with these sections:
+   - Preparation checklist (tools, access, contacts)
+   - Detection triggers (Activity Log patterns to alert on)
+   - Investigation steps (exact CLI commands)
+   - Containment actions (NSG lockdown, role revocation, VM deallocation)
+   - Eradication steps (remove unauthorized resources)
+   - Recovery procedures (restore from snapshots, re-enable access)
+   - Lessons learned template
+
+**Success Criteria:**
+- [ ] Can collect cloud forensic evidence (Activity Logs, disk snapshots, RBAC state)
+- [ ] Can perform containment actions (NSG lockdown, role revocation)
+- [ ] Can build a timeline from Azure Activity Logs
+- [ ] Can write a cloud incident response playbook
+- [ ] Understand the shared responsibility model for incident response
+
+**Assignment:**
+Write a complete "Azure Cloud Incident Response Playbook" covering all 6 NIST phases adapted for cloud. Include exact Azure CLI commands for each phase, a decision tree for severity classification, and an evidence collection checklist.
+
+---
+
+## Week 12: Cloud Security Capstone
+
+### Lesson 12.1: Cloud Security Monitoring Dashboard (4 hours)
+
+**Objectives:**
+- Ingest Azure Activity Logs into Elasticsearch
+- Build a unified cloud + endpoint security dashboard in Kibana
+- Create cloud-specific detection rules as saved searches
+- Demonstrate real-time cloud security monitoring
+
+**Theory:**
+
+**Why Unified Visibility Matters:**
+- Cloud control plane (Activity Logs) tells you WHO modified WHAT infrastructure
+- Endpoint data plane (Sysmon/Winlogbeat) tells you WHAT happened ON the systems
+- Together, you can trace: credential compromise → cloud privilege escalation → endpoint exploitation
+
+**Dashboard Design for SOC Analysts:**
+- Top panels: High-severity alerts and counts
+- Middle panels: Timelines and trends
+- Bottom panels: Detailed tables and drill-down data
+
+**Certification Mapping:** SC-200, Elastic Certified Analyst
+
+**Hands-On:**
+
+1. **Set up the Azure-to-ELK forwarder:**
+
+   The `azure_to_elk.py` script (included in this repo) polls Azure Activity Logs every 5 minutes and indexes them into Elasticsearch.
+
+   ```powershell
+   # Install elasticsearch Python package if needed
+   pip install elasticsearch
+
+   # Run the forwarder (uses your .env credentials)
+   python azure_to_elk.py
+   ```
+
+   This creates an `azure-activity-*` index pattern in Elasticsearch.
+
+2. **Create a Kibana data view for Azure Activity Logs:**
+   - Navigate to Kibana > Stack Management > Data Views
+   - Create: `azure-activity-*`
+   - Time field: `@timestamp`
+
+3. **Build Dashboard Panels:**
+
+   **Panel 1: Azure Operations Timeline** (Line chart)
+   - Index: `azure-activity-*`
+   - X-axis: `@timestamp` (date histogram, 5-minute intervals)
+   - Y-axis: Count
+   - Split by: `azure.activity.category`
+
+   **Panel 2: Top Azure Callers** (Horizontal bar chart)
+   - Terms aggregation on `azure.activity.caller`
+   - Top 10 callers
+
+   **Panel 3: Failed Azure Operations** (Data table)
+   - Filter: `azure.activity.status: "Failed"`
+   - Columns: timestamp, caller, operation, resource_group
+
+   **Panel 4: NSG Rule Changes** (Saved search)
+   - Filter: `azure.activity.operation: *SecurityRule*`
+
+   **Panel 5: VM Operations** (Saved search)
+   - Filter: `azure.activity.operation: *virtualMachines*`
+
+   **Panel 6: Role Assignment Changes** (Saved search)
+   - Filter: `azure.activity.operation: *roleAssignments*`
+
+   **Panel 7: Endpoint Failed Logins** (from winlogbeat)
+   - Index: `winlogbeat-*`
+   - Filter: `event.code: 4625`
+   - Line chart over time
+
+   **Panel 8: Suspicious Processes** (from winlogbeat)
+   - Index: `winlogbeat-*`
+   - Filter: `event.code:1 AND process.name:(powershell.exe OR cmd.exe)`
+   - Count over time
+
+4. **Create Cloud Detection Rules as Saved Searches:**
+
+   ```
+   Rule 1: "Cloud - Unauthorized Resource Creation"
+   Query: azure.activity.operation: (*Create* OR *Write*) AND azure.activity.status: "Succeeded"
+
+   Rule 2: "Cloud - Role Escalation"
+   Query: azure.activity.operation: *roleAssignments/write* AND azure.activity.status: "Succeeded"
+
+   Rule 3: "Cloud - NSG Modification"
+   Query: azure.activity.operation: *securityRules/write* AND azure.activity.status: "Succeeded"
+
+   Rule 4: "Cloud - Diagnostic Setting Deletion (Log Evasion)"
+   Query: azure.activity.operation: *diagnosticSettings/delete*
+   ```
+
+5. **Export the dashboard:**
+   - Kibana > Stack Management > Saved Objects > Export
+   - Save the `.ndjson` file to your Git repo under `dashboards/`
+
+6. **Screenshot the dashboard** and add to your Proof folder.
+
+**Success Criteria:**
+- [ ] Can ingest Azure Activity Logs into Elasticsearch
+- [ ] Can build a multi-panel Kibana dashboard
+- [ ] Dashboard shows both cloud and endpoint security data
+- [ ] Created at least 4 cloud-specific detection rules
+- [ ] Dashboard is exportable and reproducible
+
+**Assignment:**
+Build the complete Cloud Security Operations Dashboard. Export it, take screenshots, and write a README documenting: what each panel shows, what detection rules are active, how to set it up from scratch, and what alerts an analyst should prioritize.
+
+---
+
+### Lesson 12.2: Full Cloud Security Assessment and Portfolio Project (4 hours)
+
+**Objectives:**
+- Conduct a comprehensive security assessment of the entire Azure lab
+- Combine all cloud and endpoint analysis into a professional report
+- Create a GitHub portfolio showcasing the complete project
+- Prepare LinkedIn-ready presentation of skills
+
+**Theory:**
+
+**What a Professional Cloud Security Assessment Includes:**
+1. Executive Summary (1 page, non-technical)
+2. Scope and Methodology
+3. Risk Rating Framework (Critical/High/Medium/Low)
+4. Findings (each with description, evidence, impact, recommendation)
+5. Remediation Priority Matrix
+6. Appendices (raw data, tool outputs)
+
+**Portfolio Best Practices:**
+- Show the PROCESS, not just the results
+- Include screenshots as proof of work
+- Write clear READMEs with setup instructions
+- Demonstrate tools you built, not just tools you used
+- Map everything to certifications and frameworks
+
+**Certification Mapping:** AZ-500, SC-200, CySA+, GSEC
+
+**Hands-On: Full Assessment**
+
+1. **Infrastructure Inventory:**
+   ```powershell
+   mkdir assessment
+
+   # Complete resource inventory
+   az resource list --resource-group ELK-Security-Lab --output table > assessment/inventory.txt
+
+   # Network topology
+   az network vnet show --resource-group ELK-Security-Lab --name ELK-VNet --output json > assessment/network-topology.json
+
+   # All NSG rules
+   az network nsg rule list --resource-group ELK-Security-Lab --nsg-name ELK-NSG --output json > assessment/nsg-rules.json
+
+   # All public IPs
+   az network public-ip list --resource-group ELK-Security-Lab --output json > assessment/public-ips.json
+
+   # RBAC assignments
+   az role assignment list --resource-group ELK-Security-Lab --output json > assessment/rbac.json
+   ```
+
+2. **Security Assessment Checklist:**
+
+   **Identity & Access:**
+   - [ ] Reviewed all RBAC assignments
+   - [ ] Checked for over-privileged accounts
+   - [ ] Verified service principal permissions
+   - [ ] Checked for unused accounts
+
+   **Network Security:**
+   - [ ] Audited all NSG rules
+   - [ ] Checked for overly permissive rules (0.0.0.0/0)
+   - [ ] Verified network segmentation
+   - [ ] Reviewed public IP assignments
+
+   **Data Protection:**
+   - [ ] Checked disk encryption status
+   - [ ] Verified storage account security settings
+   - [ ] Checked for public blob access
+
+   **Logging & Monitoring:**
+   - [ ] Verified Activity Log export
+   - [ ] Checked diagnostic settings
+   - [ ] Verified endpoint logging (Sysmon, Winlogbeat)
+   - [ ] Reviewed dashboard coverage
+
+   **Threat Detection:**
+   - [ ] Tested cloud detection rules
+   - [ ] Tested endpoint detection rules
+   - [ ] Ran attack simulations (cloud + endpoint)
+   - [ ] Verified alert effectiveness
+
+3. **Run the full assessment:**
+   ```powershell
+   # Run the misconfiguration scanner
+   python azure_security_scanner.py > assessment/misconfig-report.txt
+
+   # Export Activity Logs
+   az monitor activity-log list --resource-group ELK-Security-Lab --output json > assessment/activity-logs.json
+
+   # Run endpoint simulations and detect them
+   # (Use Atomic Red Team tests from Week 3)
+   ```
+
+4. **Use SOC Agent to compile the report:**
+   ```python
+   python soc_agent.py
+
+   # Prompt:
+   "I need to compile a comprehensive cloud security assessment. Parse the files in the assessment/ folder and create an executive-level security assessment report with risk ratings and prioritized recommendations."
+   ```
+
+5. **Organize your GitHub portfolio:**
+   ```
+   Recommended repository structure:
+
+   ai-soc/
+   ├── README.md                      # Project overview
+   ├── soc_agent.py                   # AI SOC Agent
+   ├── soc_tools.py                   # Security tool definitions
+   ├── elk_connector.py               # ELK integration
+   ├── azure_security_scanner.py      # Cloud misconfig scanner
+   ├── azure_to_elk.py                # Activity Log forwarder
+   ├── parse_flow_logs.py             # NSG Flow Log parser
+   ├── SOC-ANALYST-LESSON-PLAN.md     # 12-week curriculum
+   ├── Proof/                         # Screenshots and evidence
+   │   ├── lesson-1.1-columns.png
+   │   ├── lesson-1.1-failed-logins.png
+   │   └── cloud-dashboard.png
+   ├── assessment/                    # Security assessment artifacts
+   ├── dashboards/                    # Kibana dashboard exports
+   ├── playbooks/                     # IR and detection playbooks
+   └── reports/                       # Generated incident reports
+   ```
+
+6. **Write your assessment report** following this structure:
+   ```
+   CLOUD SECURITY ASSESSMENT REPORT
+   =================================
+
+   Executive Summary
+   -----------------
+   [1-paragraph non-technical summary for leadership]
+
+   Scope
+   -----
+   - Resource Group: ELK-Security-Lab
+   - Resources assessed: [count] resources
+   - Assessment date: [date]
+   - Frameworks: CIS Azure Benchmark, MITRE ATT&CK Cloud
+
+   Findings Summary
+   ----------------
+   Critical: [count]
+   High: [count]
+   Medium: [count]
+   Low: [count]
+
+   Detailed Findings
+   -----------------
+   [For each finding: Description, Evidence, Impact, Recommendation]
+
+   Remediation Priority
+   --------------------
+   [Ordered list with estimated effort and risk reduction]
+
+   Conclusion
+   ----------
+   [Overall security posture assessment]
+   ```
+
+**Success Criteria:**
+- [ ] Completed full infrastructure security assessment
+- [ ] Produced professional assessment report
+- [ ] GitHub repository is organized, documented, and public
+- [ ] Dashboard is functional and demonstrates cloud+endpoint monitoring
+- [ ] Can articulate findings to both technical and non-technical audiences
+
+**Assignment:**
+This is the final capstone. Create the complete GitHub repository with all artifacts from Weeks 9-12. Write a LinkedIn post announcing the completed 12-week cloud security training. Present the assessment as if delivering to a CISO -- 5-minute executive summary + 10-minute technical deep dive.
+
+---
+
 ## Bonus Week: Advanced Topics
 
 ### Optional Lessons
@@ -1408,10 +2335,19 @@ Prepare 15-minute presentation including:
 - SANS Cyber Defense Reading Room
 - Blue Team Handbook
 
+### Cloud Security Resources
+- MITRE ATT&CK Cloud Matrix: https://attack.mitre.org/matrices/enterprise/cloud/iaas/
+- CIS Azure Foundations Benchmark: https://www.cisecurity.org/benchmark/azure
+- Azure Security Documentation: https://learn.microsoft.com/en-us/azure/security/
+- Azure CLI Reference: https://learn.microsoft.com/en-us/cli/azure/
+- SC-200 Learning Path: https://learn.microsoft.com/en-us/training/paths/sc-200-mitigate-threats-using-microsoft-365-defender/
+- AZ-500 Learning Path: https://learn.microsoft.com/en-us/training/paths/manage-identity-access/
+
 ### Practice Platforms
 - TryHackMe (SOC Level 1 path)
 - CyberDefenders (Blue Team challenges)
 - Boss of the SOC (BOTS) datasets
+- Microsoft Learn Cloud Skills Challenge
 
 ### Communities
 - r/blueteam
@@ -1449,6 +2385,21 @@ Prepare 15-minute presentation including:
 - [ ] Complete capstone investigation
 - [ ] Present findings professionally
 
+**Week 9-10: Cloud Security**
+- [ ] Query Azure Activity Logs via CLI
+- [ ] Analyze NSG Flow Logs
+- [ ] Audit Azure RBAC assignments
+- [ ] Detect cloud misconfigurations
+- [ ] Run automated security scanner
+
+**Week 11-12: Cloud Advanced & Capstone**
+- [ ] Map cloud attacks to MITRE ATT&CK Cloud Matrix
+- [ ] Simulate and detect cloud attack techniques
+- [ ] Perform cloud incident response
+- [ ] Build cloud security monitoring dashboard
+- [ ] Complete full cloud security assessment
+- [ ] Publish portfolio project on GitHub
+
 **Career Ready:**
 - [ ] Can analyze Windows security events
 - [ ] Can detect common attack techniques
@@ -1456,6 +2407,12 @@ Prepare 15-minute presentation including:
 - [ ] Can use SIEM tools effectively
 - [ ] Can leverage AI for security analysis
 - [ ] Can communicate findings clearly
+- [ ] Can monitor and analyze Azure cloud environments
+- [ ] Can detect cloud-specific attack techniques
+- [ ] Can perform cloud incident response
+- [ ] Can build unified cloud+endpoint security dashboards
+- [ ] Can produce professional security assessment reports
+- [ ] Has a public GitHub portfolio with cloud security projects
 
 ---
 
@@ -1470,6 +2427,12 @@ After completing this course, consider these certifications:
 **Intermediate:**
 - GIAC Security Essentials (GSEC)
 - GIAC Certified Incident Handler (GCIH)
+
+**Cloud Security:**
+- Microsoft AZ-500 (Azure Security Engineer)
+- Microsoft SC-200 (Security Operations Analyst)
+- CompTIA Cloud+
+- CCSK (Certificate of Cloud Security Knowledge)
 
 **Advanced:**
 - GIAC Continuous Monitoring Certification (GMON)

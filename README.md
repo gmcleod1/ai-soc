@@ -1,6 +1,6 @@
 # AI-Powered SOC Analyst Agent
 
-An intelligent Security Operations Center (SOC) agent powered by Claude AI that automates Level 1 security analyst tasks, analyzes security events from Azure ELK Stack, and provides actionable incident reports.
+An intelligent Security Operations Center (SOC) agent powered by Claude AI that automates Level 1 security analyst tasks, analyzes security events from Azure ELK Stack, and provides actionable incident reports. Includes a 12-week SOC analyst training curriculum covering endpoint security, cloud security (Azure), MITRE ATT&CK, and AI-powered incident response.
 
 ## Features
 
@@ -29,6 +29,19 @@ An intelligent Security Operations Center (SOC) agent powered by Claude AI that 
 - Generic log file parsing
 - Microsoft Sentinel JSON export parsing
 - Automated incident report generation (JSON format)
+
+### Cloud Security Tools
+- **Azure Security Scanner** (`azure_security_scanner.py`): Automated misconfiguration detection for NSGs, storage accounts, RBAC, disk encryption, and public IPs
+- **Azure Activity Log Forwarder** (`azure_to_elk.py`): Streams Azure Activity Logs into Elasticsearch for unified cloud+endpoint monitoring
+- **NSG Flow Log Parser** (`parse_flow_logs.py`): Analyzes NSG Flow Logs to identify denied traffic, suspicious outbound connections, and network anomalies
+
+### 12-Week Training Curriculum
+- **Weeks 1-2**: SOC Foundations (Kibana, Windows Event Logs, KQL)
+- **Weeks 3-4**: MITRE ATT&CK & Threat Hunting (Atomic Red Team, brute force detection, lateral movement)
+- **Weeks 5-6**: AI-Powered Investigation (SOC Agent, detection rules, incident response)
+- **Weeks 7-8**: Advanced Threat Hunting & Capstone
+- **Weeks 9-10**: Azure Cloud Security (Activity Logs, NSG Flow Logs, Entra ID, RBAC, misconfiguration hunting)
+- **Weeks 11-12**: Cloud Attack Simulation & Capstone (Cloud MITRE ATT&CK, cloud IR, unified dashboard, portfolio project)
 
 ## Architecture
 
@@ -149,14 +162,22 @@ Your Azure ELK Stack should have these index patterns:
 
 ```
 ai-soc/
-├── soc_agent.py          # Main agent orchestration
-├── soc_tools.py          # Security tool definitions
-├── elk_connector.py      # Elasticsearch integration
-├── requirements.txt      # Python dependencies
-├── .env.example          # Environment template
-├── reports/              # Generated incident reports
-└── logs/                 # Log storage
-    └── sentinel/         # Microsoft Sentinel exports
+├── soc_agent.py                # Main agent orchestration
+├── soc_tools.py                # Security tool definitions
+├── elk_connector.py            # Elasticsearch integration
+├── azure_security_scanner.py   # Cloud misconfiguration scanner
+├── azure_to_elk.py             # Azure Activity Log forwarder
+├── parse_flow_logs.py          # NSG Flow Log parser
+├── SOC-ANALYST-LESSON-PLAN.md  # 12-week training curriculum
+├── requirements.txt            # Python dependencies
+├── .env.example                # Environment template
+├── Proof/                      # Screenshots and evidence
+├── assessment/                 # Security assessment artifacts
+├── dashboards/                 # Kibana dashboard exports
+├── playbooks/                  # IR and detection playbooks
+├── reports/                    # Generated incident reports
+└── logs/                       # Log storage
+    └── sentinel/               # Microsoft Sentinel exports
 ```
 
 ## Security Considerations
