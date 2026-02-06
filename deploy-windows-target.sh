@@ -25,7 +25,7 @@ VM_SIZE="${VM_SIZE:-Standard_D2s_v3}"
 VNET_NAME="ELK-VNet"
 SUBNET_NAME="ELK-Subnet"
 NSG_NAME="ELK-NSG"
-VM_NAME="Windows-Target-VM"
+VM_NAME="WinTarget-VM"
 ADMIN_USER="azureuser"
 ADMIN_PASSWORD=$(openssl rand -base64 20 | tr -d "=+/" | cut -c1-20)Aa1!
 

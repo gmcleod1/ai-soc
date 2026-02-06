@@ -36,3 +36,14 @@ Thumbs.db
 # Temporary files
 *.tmp
 *.bak
+
+# Credentials and sensitive files
+windows-target-credentials.txt
+elk-credentials.txt
+*credentials*.txt
+
+# Claude AI local files (may contain sensitive data)
+.claude/
+
+# LinkedIn posts and personal content
+LINKEDIN-POST.md

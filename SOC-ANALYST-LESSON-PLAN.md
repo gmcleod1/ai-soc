@@ -217,7 +217,7 @@ Create 5 KQL queries for different security scenarios (e.g., detect new user cre
 
 1. **Deploy Windows VM with Sysmon:**
    ```bash
-   ELK_PASSWORD=VpqpwvvtHRnfibtizZm1hvnFv ./deploy-windows-target.sh
+   ELK_PASSWORD=your-elk-password-here ./deploy-windows-target.sh
    ```
 
 2. **Create winlogbeat data view in Kibana:**
