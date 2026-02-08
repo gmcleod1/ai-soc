@@ -143,23 +143,26 @@ Wildcards:
 
 2. **Find failed logins for a specific user:**
    ```
-   event.code:4625 AND user.name:"Administrator"
+   event.code:4625 AND winlog.event_data.TargetUserName:"fakeuser"
    ```
+   > Note: The username field in Winlogbeat is `winlog.event_data.TargetUserName`, not `user.name`. Always check the actual field names in your data.
 
-3. **Find all process creation events:**
+3. **Find all process creation events (Sysmon):**
    ```
-   event.code:4688
+   event.code:1
    ```
+   > Note: Windows Event ID 4688 requires enabling Audit Process Creation policy. Sysmon Event ID 1 is available by default and provides richer data (command line, parent process, hashes).
 
-4. **Find PowerShell executions:**
+4. **Find PowerShell executions (Sysmon):**
    ```
-   event.code:4688 AND process.name:"powershell.exe"
+   event.code:1 AND winlog.event_data.Description:"Windows PowerShell"
    ```
 
 5. **Find logons from external IPs:**
    ```
-   event.code:4624 NOT source.ip:10.0.*
+   event.code:4624 AND winlog.event_data.LogonType:10
    ```
+   > Note: `winlog.event_data.IpAddress` may be empty. Use LogonType 10 (RDP) to filter remote logons instead.
 
 6. **Find administrative account changes:**
    ```
