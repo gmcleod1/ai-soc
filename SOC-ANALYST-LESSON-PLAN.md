@@ -28,6 +28,105 @@ By the end of this course, you will be able to:
 
 ---
 
+## Pre-Flight: Lab Validation Checklist (30 minutes)
+
+**Complete this checklist BEFORE starting Week 1.** It prevents the most common issues students encounter.
+
+### Step 1: Verify Connectivity
+
+```powershell
+# Check your current public IP (you'll need this for NSG rules)
+curl -s ifconfig.me
+
+# Verify Azure CLI is authenticated
+az account show --query "{Subscription:name, User:user.name}" --output table
+
+# Check VM status
+az vm list --resource-group ELK-Security-Lab --show-details --query "[].{Name:name, Status:powerState, IP:publicIps}" --output table
+```
+
+- [ ] All 3 VMs are running (Elasticsearch-VM, Kibana-VM, WinTarget-VM)
+- [ ] Can access Kibana at http://KIBANA-IP:5601
+- [ ] Can RDP to WinTarget-VM on port 3389
+
+### Step 2: Verify NSG Rules Allow Your IP
+
+```powershell
+# List current NSG rules
+az network nsg rule list --resource-group ELK-Security-Lab --nsg-name ELK-NSG --output table
+```
+
+- [ ] Allow-SSH rule has your current public IP
+- [ ] Allow-RDP rule has your current public IP
+- [ ] Allow-Kibana rule has your current public IP
+
+> **Your IP changes frequently.** If you can't connect, update the rules:
+> ```powershell
+> $myIP = (curl -s ifconfig.me).Trim()
+> az network nsg rule update --resource-group ELK-Security-Lab --nsg-name ELK-NSG --name Allow-RDP --source-address-prefixes "$myIP/32"
+> az network nsg rule update --resource-group ELK-Security-Lab --nsg-name ELK-NSG --name Allow-Kibana --source-address-prefixes "$myIP/32"
+> az network nsg rule update --resource-group ELK-Security-Lab --nsg-name ELK-NSG --name Allow-SSH --source-address-prefixes "$myIP/32"
+> ```
+
+### Step 3: Verify Log Flow
+
+In Kibana (Discover), check that data exists in both indices:
+
+| Index Pattern | What It Contains | Verify Query |
+|--------------|-----------------|-------------|
+| `filebeat-*` | Linux system logs (Elasticsearch/Kibana VMs) | Any recent documents |
+| `winlogbeat-*` | Windows + Sysmon logs (WinTarget-VM) | `event.code:1` (Sysmon process creation) |
+
+- [ ] `filebeat-*` data view exists and has recent data
+- [ ] `winlogbeat-*` data view exists and has recent data
+- [ ] Sysmon Event ID 1 returns results: `event.code:1`
+
+### Step 4: Verify Sysmon is Running
+
+RDP into WinTarget-VM and run:
+```powershell
+# Check Sysmon service
+Get-Service Sysmon64
+
+# Check Winlogbeat service
+Get-Service winlogbeat
+```
+
+- [ ] Sysmon64 service is Running
+- [ ] Winlogbeat service is Running
+
+### Step 5: Know Your Field Names
+
+**This is the #1 source of confusion.** Winlogbeat field names differ from ECS (Elastic Common Schema) defaults shown in many tutorials.
+
+| What You Want | WRONG Field (ECS) | CORRECT Field (Winlogbeat) |
+|--------------|-------------------|---------------------------|
+| Username | `user.name` | `winlog.event_data.TargetUserName` |
+| Command line | `process.command_line` | `winlog.event_data.CommandLine` |
+| Source IP | `source.ip` | `winlog.event_data.IpAddress` (often empty) |
+| Parent process | `process.parent.name` | `winlog.event_data.ParentImage` |
+| Process name | `process.name` | Works for Sysmon events |
+| Logon type | N/A | `winlog.event_data.LogonType` |
+| PowerShell | `process.name:powershell.exe` | `winlog.event_data.Description:"Windows PowerShell"` |
+
+> **Tip:** When a query returns zero results, expand a document in Kibana Discover and check the actual field names. The `winlog.event_data.*` fields contain the raw Windows event data.
+
+See `KQL-FIELD-REFERENCE.md` for a complete cheat sheet.
+
+### Step 6: Audit Policy Check (Optional)
+
+Some Windows Event IDs require audit policies to be enabled. These are optional for this course since we use Sysmon (which captures the same data with richer detail):
+
+| Event ID | Audit Policy Needed | Sysmon Alternative |
+|----------|--------------------|--------------------|
+| 4688 | Audit Process Creation | Sysmon Event ID 1 (preferred) |
+| 4698 | Audit Other Object Access Events | Sysmon Event ID 1 (schtasks.exe) |
+| 4697 | Audit Security System Extension | N/A |
+
+> **Recommendation:** Use Sysmon Event ID 1 instead of Windows Event ID 4688 for process creation detection. Sysmon provides full command line, parent process, and file hashes.
+
+---
+
 ## Week 1: Foundations
 
 ### Lesson 1.1: Understanding Your SOC Lab Environment (2 hours)
@@ -120,14 +219,14 @@ Write a brief description of each critical Event ID and when you'd investigate i
 ```
 Basic Syntax:
   field:value              → event.code:4625
-  field:*partial*          → user.name:*admin*
+  field:*partial*          → winlog.event_data.TargetUserName:*admin*
   field > value            → process.pid > 1000
   field:(value1 OR value2) → event.code:(4624 OR 4625)
 
 Boolean Operators:
-  AND  → event.code:4625 AND user.name:admin
-  OR   → source.ip:192.168.1.* OR source.ip:10.0.*
-  NOT  → event.code:4624 NOT user.name:SYSTEM
+  AND  → event.code:4625 AND winlog.event_data.TargetUserName:admin
+  OR   → winlog.event_data.IpAddress:192.168.1.* OR winlog.event_data.IpAddress:10.0.*
+  NOT  → event.code:4624 NOT winlog.event_data.TargetUserName:SYSTEM
 
 Wildcards:
   *    → Matches any characters
@@ -320,9 +419,9 @@ powershell -ExecutionPolicy Bypass -WindowStyle Hidden
 
 2. **Hunt for it in Kibana:**
    ```
-   event.code:1 AND process.command_line:*whoami*
-   event.code:1 AND process.command_line:*-enc*
-   event.code:1 AND process.command_line:*net* AND process.command_line:*user*
+   event.code:1 AND winlog.event_data.CommandLine:*whoami*
+   event.code:1 AND winlog.event_data.CommandLine:*-enc*
+   event.code:1 AND winlog.event_data.CommandLine:*net* AND winlog.event_data.CommandLine:*user*
    ```
 
 3. **Analyze the parent process:**
@@ -486,7 +585,7 @@ The AI agent will:
 1. **T1087.001 - Account Discovery**
    ```powershell
    Invoke-AtomicTest T1087.001
-   # Then search: event.code:4688 AND process.command_line:*net*user*
+   # Then search: event.code:1 AND winlog.event_data.CommandLine:*net*user*
    ```
 
 2. **T1136.001 - Create Local Account**
@@ -550,16 +649,16 @@ foreach ($user in $users) {
 # Find all failed logins in last 15 minutes
 event.code:4625 AND @timestamp > now-15m
 
-# Aggregate by source IP
-# Visualize: Terms aggregation on source.ip field
+# Aggregate by source IP (use winlog.event_data.IpAddress or LogonType:10 for RDP)
+# Visualize: Terms aggregation on winlog.event_data.IpAddress field
 ```
 
 **Step 3: Analyze the Attack**
 
 Create visualizations:
 1. **Failed Login Timeline**: Line chart showing Event 4625 over time
-2. **Top Failed Usernames**: Terms aggregation on user.name
-3. **Failed Logins by IP**: Terms aggregation on source.ip
+2. **Top Failed Usernames**: Terms aggregation on winlog.event_data.TargetUserName
+3. **Failed Logins by IP**: Terms aggregation on winlog.event_data.IpAddress (may be empty - see note in Lesson 1.3)
 4. **Failure Sub-Status Codes**: Breakdown of why logins failed
 
 **Step 4: Calculate Metrics**
@@ -649,7 +748,7 @@ event.code:4648
 event.code:4624 AND winlog.event_data.LogonType:3
 
 # Process creation via WMI
-event.code:4688 AND process.parent.name:WmiPrvSE.exe
+event.code:1 AND winlog.event_data.ParentImage:*WmiPrvSE.exe
 ```
 
 **Step 3: Build Attack Timeline**
@@ -849,7 +948,7 @@ Response: Review task details, verify legitimacy, delete if malicious
 ```
 Name: New Administrator Account - Potential Backdoor
 Description: Detects creation of new accounts added to Administrators group
-Query: event.code:4732 AND group.name:"Administrators"
+Query: event.code:4732 AND winlog.event_data.TargetUserName:"Administrators"
 Threshold: 1 event
 Time Window: 1 minute
 Severity: High
@@ -990,8 +1089,11 @@ You receive an alert: "Multiple failed login attempts detected from IP 192.168.1
 
 ```
 # Quick check in Kibana
-event.code:4625 AND source.ip:192.168.1.100 AND @timestamp > now-1h
+event.code:4625 AND winlog.event_data.IpAddress:192.168.1.100 AND @timestamp > now-1h
+```
+> Note: `winlog.event_data.IpAddress` may be empty for some logon types. If so, filter by time range and review all 4625 events manually.
 
+```
 Questions to answer:
 - How many failed attempts?
 - What usernames were targeted?
@@ -1003,13 +1105,13 @@ Questions to answer:
 
 ```
 # Check if any logins succeeded
-event.code:4624 AND source.ip:192.168.1.100
+event.code:4624 AND winlog.event_data.IpAddress:192.168.1.100
 
 # Check what the source IP did after successful login
-event.code:(4688 OR 1) AND source.ip:192.168.1.100
+event.code:(1) AND winlog.event_data.User:*compromised-user*
 
 # Look for lateral movement
-event.code:4648 AND user.name:*compromised-user*
+event.code:4648 AND winlog.event_data.TargetUserName:*compromised-user*
 ```
 
 **Step 3: Build Timeline (20 minutes)**
@@ -1018,10 +1120,10 @@ Create table in Kibana with columns:
 - @timestamp
 - event.code
 - event.outcome
-- user.name
-- source.ip
+- winlog.event_data.TargetUserName
+- winlog.event_data.IpAddress
 - process.name
-- process.command_line
+- winlog.event_data.CommandLine
 
 Sort chronologically.
 
@@ -1202,14 +1304,14 @@ Conduct a full investigation of one of your Atomic Red Team simulations and writ
 ```
 Assumption: Attackers use built-in Windows tools to avoid detection
 Hunt for: certutil, bitsadmin, mshta used for downloads
-Query: event.code:1 AND process.name:(certutil.exe OR bitsadmin.exe OR mshta.exe) AND process.command_line:*http*
+Query: event.code:1 AND process.name:(certutil.exe OR bitsadmin.exe OR mshta.exe) AND winlog.event_data.CommandLine:*http*
 ```
 
 **Hypothesis 2: PowerShell Obfuscation**
 ```
 Assumption: Attackers obfuscate PowerShell to evade detection
 Hunt for: Encoded commands, hidden windows, execution policy bypass
-Query: event.code:1 AND process.name:powershell.exe AND process.command_line:(-enc OR -WindowStyle Hidden OR -ExecutionPolicy Bypass)
+Query: event.code:1 AND winlog.event_data.Description:"Windows PowerShell" AND winlog.event_data.CommandLine:(*-enc* OR *-WindowStyle Hidden* OR *-ExecutionPolicy Bypass*)
 ```
 
 **Hypothesis 3: Unusual Parent-Child Relationships**
@@ -1229,7 +1331,7 @@ certutil.exe -urlcache -split -f http://example.com/test.txt C:\temp\test.txt
 
 Now hunt for it:
 ```
-event.code:1 AND process.name:certutil.exe AND process.command_line:*urlcache*
+event.code:1 AND process.name:certutil.exe AND winlog.event_data.CommandLine:*urlcache*
 ```
 
 **Success Criteria:**
@@ -1272,7 +1374,7 @@ event.code:1 AND process.name:outlook.exe AND @timestamp:[00:00 TO 05:00]
 event.code:1 AND process.name:psexec.exe
 
 # User account that never logged in before
-event.code:4624 AND user.name:NEW_USER
+event.code:4624 AND winlog.event_data.TargetUserName:NEW_USER
 ```
 
 **3. Relationship-Based Anomalies**
@@ -1281,7 +1383,7 @@ event.code:4624 AND user.name:NEW_USER
 event.code:1 AND process.parent.name:excel.exe AND process.name:powershell.exe
 
 # Service account logging in interactively
-event.code:4624 AND user.name:*svc* AND winlog.event_data.LogonType:2
+event.code:4624 AND winlog.event_data.TargetUserName:*svc* AND winlog.event_data.LogonType:2
 ```
 
 **Hands-On:**
