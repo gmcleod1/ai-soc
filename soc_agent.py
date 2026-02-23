@@ -95,7 +95,12 @@ def analyze_security_event(event_description):
     return "Analysis incomplete"
 
 if __name__ == "__main__":
-    
-    analyze_security_event(
-        "Failed login attempt from 45.142.212.61 for user 'admin' at 2024-02-04 10:15:23"
-    )
+    print("\n=== SOC ANALYST AGENT ===")
+    print("Type your investigation prompt, or 'quit' to exit.\n")
+
+    while True:
+        prompt = input("SOC> ").strip()
+        if prompt.lower() in ("quit", "exit", "q"):
+            break
+        if prompt:
+            analyze_security_event(prompt)

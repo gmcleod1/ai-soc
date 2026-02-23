@@ -3,6 +3,9 @@ from elasticsearch import Elasticsearch
 import json
 from datetime import datetime, timedelta
 import os
+from dotenv import load_dotenv
+
+load_dotenv()
 
 class ELKConnector:
     def __init__(self):
@@ -16,7 +19,7 @@ class ELKConnector:
             ca_certs=os.environ.get("ELK_CA_CERT_PATH")  # If using self-signed certs
         )
     
-    def query_logs(self, index_pattern, query, time_range_minutes=60, max_results=100):
+    def query_logs(self, index_pattern, query, time_range_minutes=60, max_results=50):
         """
         Query ELK using Lucene query syntax
         
@@ -66,7 +69,10 @@ class ELKConnector:
                     "message": source.get("message"),
                     "source_ip": source.get("source", {}).get("ip"),
                     "event_id": source.get("event", {}).get("code"),
-                    "raw": source
+                    "user": source.get("winlog", {}).get("event_data", {}).get("TargetUserName"),
+                    "logon_type": source.get("winlog", {}).get("event_data", {}).get("LogonType"),
+                    "process": source.get("winlog", {}).get("event_data", {}).get("NewProcessName"),
+                    "cmdline": source.get("winlog", {}).get("event_data", {}).get("CommandLine"),
                 })
             
             return json.dumps({
