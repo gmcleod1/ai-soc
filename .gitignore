@@ -48,3 +48,10 @@ elk-credentials.txt
 # LinkedIn posts and personal content
 *linkedin*
 *LINKEDIN*
+
+# Personal/resume files
+resume-*.md
+interview-prep.md
+
+# Scripts with embedded credentials
+create_n8n_workflows.py
