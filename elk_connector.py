@@ -101,7 +101,7 @@ class ELKConnector:
             query_parts.append(f"source.ip:{ip_address}")
         
         if username:
-            query_parts.append(f"user.name:{username}")
+            query_parts.append(f"winlog.event_data.TargetUserName:{username}")
         
         query = " OR ".join([f"({q})" for q in query_parts[:2]])
         if ip_address or username:
@@ -117,7 +117,7 @@ class ELKConnector:
         """
         Query for suspicious process execution (Sysmon Event ID 1)
         """
-        query = f"host.name:{hostname} AND event.code:1 AND (process.name:(*powershell* OR *cmd* OR *wscript* OR *cscript* OR *mshta*))"
+        query = f"host.name:{hostname} AND event.code:1 AND (winlog.event_data.CommandLine:(*powershell* OR *cmd* OR *wscript* OR *cscript* OR *mshta* OR *whoami* OR *net* OR *ipconfig* OR *mimikatz* OR *certutil*))"
         
         return self.query_logs(
             index_pattern="winlogbeat-*",
